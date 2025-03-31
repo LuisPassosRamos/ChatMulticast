@@ -1,5 +1,5 @@
 # Importa a biblioteca socket do Python para trabalhar com sockets
-import socket
+import socket, json, os, time
 
 # Define o endereço de multicast e a porta
 MULTICAST_GROUP = "224.1.1.1"
@@ -39,6 +39,22 @@ O valor dessa opção é a união do endereço do grupo multicast e o endereço 
 sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
                 socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton("0.0.0.0"))
 
+# Cria ou carrega o arquivo de réplicas
+if not os.path.exists("replica_server.json"):
+    with open("replica_server.json", "w") as f:
+        json.dump([], f)
+
+"""
+Função para gravar mensagem em formato JSON,
+adicionando cada mensagem em uma lista no arquivo replica_server.json
+"""
+def gravar_mensagem_servidor(mensagem):
+    with open("replica_server.json", "r") as f:
+        historico = json.load(f)
+    historico.append(mensagem)
+    with open("replica_server.json", "w") as f:
+        json.dump(historico, f)
+
 # Printa uma mensagem informando que o servidor está esperando mensagens
 print("Servidor esperando mensagens...")
 
@@ -55,4 +71,6 @@ O : indica que o que vem a seguir é um formato. Nesse caso, o formato é o mét
 '''
 while True:
     data, addr = sock.recvfrom(1024)
-    print(f"Mensagem recebida de {addr}: {data.decode()}")
+    msg = data.decode()
+    gravar_mensagem_servidor(msg)
+    print(f"Mensagem recebida de {addr}: {msg}")
