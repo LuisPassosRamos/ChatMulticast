@@ -123,18 +123,18 @@ def enviar_mensagens():
     while True:
         checkpoint = carregar_checkpoint()
         if not checkpoint["token"]:
-            print("Aguardando o token para enviar mensagens...")
-            time.sleep(1)
+            logging.info("Aguardando o token para enviar mensagens...")
+            time.sleep(5)  # Aguarda 5 segundos antes de verificar novamente
             continue
 
         try:
             msg = input("Digite sua mensagem (ou 'exit' para sair): ").strip()
             if not msg or len(msg) > 256:
-                print("Mensagem inválida. Tente novamente.")
+                logging.warning("Mensagem inválida. Tente novamente.")
                 continue
 
             if msg.lower() == "exit":
-                print("Encerrando o cliente...")
+                logging.info("Encerrando o cliente...")
                 salvar_checkpoint(last_msg="", token=False, neighbors=[])
                 exit()
 
@@ -144,14 +144,14 @@ def enviar_mensagens():
 
             # Atualiza o checkpoint e libera o token
             salvar_checkpoint(last_msg=msg, token=False, neighbors=[])
-            print("Mensagem enviada. Token liberado.")
+            logging.info("Mensagem enviada. Token liberado.")
 
             # Simula a passagem do token para outro cliente
-            print("Passando o token para o próximo cliente...")
+            logging.info("Passando o token para o próximo cliente...")
             time.sleep(2)
             salvar_checkpoint(last_msg=msg, token=True, neighbors=checkpoint["neighbors"])
         except EOFError:
-            print("\nEntrada finalizada. Encerrando o cliente...")
+            logging.info("Entrada finalizada. Encerrando o cliente...")
             salvar_checkpoint(last_msg="", token=False, neighbors=[])
             exit()
 
