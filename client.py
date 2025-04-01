@@ -1,121 +1,175 @@
-# Importa a biblioteca socket do Python para trabalhar com sockets
 import socket
-import time
-import random
-import json, os
+import json
+import os
+import threading
+import time  # Adicionado no início do arquivo
+import logging
 
-# Define o endereço de multicast e a porta
+# Configuração do logger
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+
+# Configurações de multicast
 MULTICAST_GROUP = "224.1.1.1"
-PORT = 5007
+PORT = 50007
+REPLICA_FILE = "replica.json"
+CHECKPOINT_FILE = "checkpoint.json"
 
-"""
-Cria um socket UDP para envio de mensagens.
-.setsockopt() define o TTL do multicast.
-"""
+# Configuração do socket para comunicação multicast
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
+sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
+                socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton("0.0.0.0"))
+sock.settimeout(5)  # Timeout de 5 segundos para evitar bloqueios
 
-# Cria ou carrega o arquivo de réplicas
-if not os.path.exists("replica.json"):
-    with open("replica.json", "w") as f:
-        json.dump([], f)
+# Lock para sincronização de acesso ao arquivo de réplicas
+replica_lock = threading.Lock()
 
-# Cria ou carrega o arquivo de checkpoints
-if not os.path.exists("checkpoint.json"):
-    with open("checkpoint.json", "w") as f:
-        json.dump({"last_message": "", "token": False, "neighbors": []}, f)
 
-"""
-Função para gravar a mensagem no arquivo replica.json
-Cada mensagem é armazenada em formato JSON, mantendo histórico de envio
-"""
+def inicializar_arquivos():
+    """Inicializa os arquivos necessários para o cliente."""
+    if not os.path.exists(REPLICA_FILE):
+        with open(REPLICA_FILE, "w") as f:
+            json.dump([], f)
+
+    if not os.path.exists(CHECKPOINT_FILE):
+        with open(CHECKPOINT_FILE, "w") as f:
+            json.dump({"last_message": "", "token": True, "neighbors": []}, f)
+
+
 def gravar_mensagem(mensagem):
-    with open("replica.json", "r") as f:
-        historico = json.load(f)
-    historico.append(mensagem)
-    with open("replica.json", "w") as f:
-        json.dump(historico, f)
+    """Grava uma mensagem no arquivo de réplicas."""
+    try:
+        with replica_lock:
+            with open(REPLICA_FILE, "r") as f:
+                historico = json.load(f)
+            historico.append(mensagem)
+            with open(REPLICA_FILE, "w") as f:
+                json.dump(historico, f, indent=4)
+        logging.info(f"Mensagem gravada: {mensagem}")
+    except (FileNotFoundError, json.JSONDecodeError):
+        logging.error("Erro ao acessar o arquivo de réplicas. Criando um novo arquivo.")
+        with open(REPLICA_FILE, "w") as f:
+            json.dump([mensagem], f, indent=4)
 
-"""
-Função para salvar checkpoint, incluindo última mensagem,
-token (para Token Ring) e lista de vizinhos para exclusão mútua
-"""
+
 def salvar_checkpoint(last_msg, token, neighbors):
+    """Salva o estado atual no arquivo de checkpoint."""
     checkpoint_data = {
         "last_message": last_msg,
         "token": token,
         "neighbors": neighbors
     }
-    with open("checkpoint.json", "w") as f:
+    with open(CHECKPOINT_FILE, "w") as f:
         json.dump(checkpoint_data, f)
 
-"""
-Função para carregar checkpoint (caso precisemos fazer rollback)
-Retorna as informações relevantes para retomar estado
-"""
+
 def carregar_checkpoint():
-    with open("checkpoint.json", "r") as f:
-        return json.load(f)
+    """Carrega o estado salvo no arquivo de checkpoint."""
+    try:
+        with open(CHECKPOINT_FILE, "r") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        print("Erro ao carregar o checkpoint. Restaurando estado inicial.")
+        salvar_checkpoint(last_msg="", token=True, neighbors=[])
+        return {"last_message": "", "token": True, "neighbors": []}
 
-"""
-Exemplo simples de distribuição de token (Token Ring).
-O 'neighbors' é uma lista de endereços IP/port do próximo cliente no anel.
-Se este cliente tiver 'token' True, ele pode enviar mensagens.
-Depois de enviar, pode repassar o token ao próximo nó do anel.
-Esta é uma versão bem simplificada que assume rede estável.
-"""
-def enviar_token():
-    cp = carregar_checkpoint()
-    if cp["neighbors"]:
-        next_neighbor = cp["neighbors"][0]  # Exemplo: envia sempre ao primeiro da lista
-        # Convertemos 'next_neighbor' num (ip, port) e enviamos uma string "TOKEN"
-        ip, port = next_neighbor.split(":")
-        sock.sendto("TOKEN".encode(), (ip, int(port)))
-        cp["token"] = False
-        salvar_checkpoint(cp["last_message"], cp["token"], cp["neighbors"])
 
-"""
-Loop principal: se tem token, pode enviar mensagens;
-caso não tenha, fica escutando token via recvfrom.
-"""
-cp = carregar_checkpoint()
+def sincronizar_replicas():
+    """Sincroniza as mensagens recebidas fora de ordem."""
+    with replica_lock:
+        with open(REPLICA_FILE, "r") as f:
+            historico = json.load(f)
+        historico = sorted(historico)
+        with open(REPLICA_FILE, "w") as f:
+            json.dump(historico, f)
 
-# Caso precisemos restaurar algo
-print("Carregando checkpoint: ", cp)
 
-# Se neighbours estiver vazio, este nó é "único" ou inicial no anel: assume token
-if not cp["neighbors"]:
-    cp["token"] = True
-    salvar_checkpoint(cp["last_message"], cp["token"], cp["neighbors"])
-
-# Loop infinito de envio/recebimento
-while True:
-    # Se o cliente não tem token, espera receber o token
-    if not cp["token"]:
-        sock.settimeout(None)  # Bloqueia até receber
+def verificar_servidor():
+    """Verifica se o servidor está ativo."""
+    try:
+        sock.sendto(b"ping", (MULTICAST_GROUP, PORT))
         data, addr = sock.recvfrom(1024)
-        # Se a mensagem for 'TOKEN', assume token
-        msg = data.decode()
-        if msg == "TOKEN":
-            cp["token"] = True
-            salvar_checkpoint(cp["last_message"], cp["token"], cp["neighbors"])
+        if data.decode() == "pong":
+            print("Servidor ativo.")
+            return True
+    except socket.timeout:
+        print("Servidor não encontrado. Verifique se ele está ativo.")
+        return False
 
-    # Se tem token, pode enviar mensagem
-    if cp["token"]:
-        msg = input("Digite sua mensagem: ")
-        # Simula atraso de 1 a 3 segundos
-        time.sleep(random.uniform(1, 3))
 
-        # Envia ao grupo multicast
-        sock.sendto(msg.encode(), (MULTICAST_GROUP, PORT))
+def receber_mensagens():
+    """Recebe mensagens do grupo multicast."""
+    while True:
+        try:
+            data, addr = sock.recvfrom(1024)
+            msg = data.decode()
+            gravar_mensagem(msg)
+            sincronizar_replicas()
+            print(f"Mensagem recebida de {addr}: {msg}")
 
-        # Grava em réplica e atualiza checkpoint
-        gravar_mensagem(msg)
-        cp["last_message"] = msg
-        salvar_checkpoint(cp["last_message"], cp["token"], cp["neighbors"])
+            # Simula a liberação do token após receber uma mensagem
+            checkpoint = carregar_checkpoint()
+            if not checkpoint["token"]:
+                salvar_checkpoint(last_msg=checkpoint["last_message"], token=True, neighbors=checkpoint["neighbors"])
+                print("Token recebido após mensagem.")
+        except socket.timeout:
+            time.sleep(1)  # Aguarda 1 segundo antes de tentar novamente
+            continue
 
-        # Após enviar, repassa token
-        enviar_token()
-    else:
-        # Em caso de backups periódicos ou algo do gênero
-        time.sleep(1)
+
+def enviar_mensagens():
+    """Envia mensagens para o grupo multicast."""
+    while True:
+        checkpoint = carregar_checkpoint()
+        if not checkpoint["token"]:
+            print("Aguardando o token para enviar mensagens...")
+            time.sleep(1)
+            continue
+
+        try:
+            msg = input("Digite sua mensagem (ou 'exit' para sair): ").strip()
+            if not msg or len(msg) > 256:
+                print("Mensagem inválida. Tente novamente.")
+                continue
+
+            if msg.lower() == "exit":
+                print("Encerrando o cliente...")
+                salvar_checkpoint(last_msg="", token=False, neighbors=[])
+                exit()
+
+            # Envia a mensagem para o grupo multicast
+            sock.sendto(msg.encode(), (MULTICAST_GROUP, PORT))
+            gravar_mensagem(msg)
+
+            # Atualiza o checkpoint e libera o token
+            salvar_checkpoint(last_msg=msg, token=False, neighbors=[])
+            print("Mensagem enviada. Token liberado.")
+
+            # Simula a passagem do token para outro cliente
+            print("Passando o token para o próximo cliente...")
+            time.sleep(2)
+            salvar_checkpoint(last_msg=msg, token=True, neighbors=checkpoint["neighbors"])
+        except EOFError:
+            print("\nEntrada finalizada. Encerrando o cliente...")
+            salvar_checkpoint(last_msg="", token=False, neighbors=[])
+            exit()
+
+
+if __name__ == "__main__":
+    print("Tentando se conectar ao servidor...")
+    inicializar_arquivos()
+    if not verificar_servidor():
+        print("Servidor não está ativo. Por favor, inicie o servidor antes de executar o cliente.")
+        exit()
+
+    # Inicia threads para envio e recebimento de mensagens
+    thread_receber = threading.Thread(target=receber_mensagens, daemon=True)
+    thread_receber.start()
+
+    thread_enviar = threading.Thread(target=enviar_mensagens, daemon=True)
+    thread_enviar.start()
+
+    # Mantém o cliente ativo
+    thread_receber.join()
+    thread_enviar.join()

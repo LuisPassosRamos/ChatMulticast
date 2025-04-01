@@ -24,30 +24,49 @@ Este projeto tem como objetivo desenvolver um sistema de chat em grupo distribu�
    - Restaurar o estado salvo no último checkpoint após uma falha.
    - Utilizar arquivos simples ou SQLite para armazenar checkpoints (neste exemplo, JSON).
 
+5. **Controle Concorrente com `threading`**
+   - Implementar threads para envio e recebimento de mensagens simultaneamente.
+   - Garantir sincronização de acesso aos arquivos JSON usando `threading.Lock`.
+
 ## Tecnologias Utilizadas
 - **Linguagem**: Python 3
 - **Bibliotecas**:
   - `socket` (para comunicação via UDP multicast)
   - `time` e `random` (para simular delays na entrega de mensagens)
   - `json` (para armazenamento de mensagens e checkpoints)
-  - `threading` ou `asyncio` (opcional, para controle concorrente)
+  - `threading` (para controle concorrente)
+  - `unittest` e `mock` (para testes unitários)
+  - `flask`, `requests`, `gunicorn` (opcional, para extensões futuras)
 
 ## Como Executar
-1. **Executar o Servidor**
+1. **Instalar Dependências**
+   - Certifique-se de que o Python 3 está instalado.
+   - Instale as dependências listadas no arquivo `requirement.txt`:
+     ```sh
+     pip install -r requirement.txt
+     ```
+
+2. **Executar o Servidor**
    - Rode o seguinte comando na pasta raiz:
      ```sh
      python server.py
      ```
    - O servidor ficará escutando mensagens no endereço multicast (224.1.1.1:5007).
 
-2. **Executar os Clientes**
+3. **Executar os Clientes**
    - Rode o seguinte comando para cada cliente em terminais diferentes:
      ```sh
      python client.py
      ```
    - Cada cliente criará ou usará réplicas (`replica.json`) e checkpoints (`checkpoint.json`).
 
-3. **Testes e Demonstração**
+4. **Executar os Testes**
+   - Para garantir que todas as funções estão funcionando corretamente, execute os testes unitários:
+     ```sh
+     python -m unittest test_client.py
+     ```
+
+5. **Testes e Demonstração**
    - O sistema deve ser testado com pelo menos 3 clientes conectados simultaneamente.
    - Registre prints ou vídeos da execução para documentação.
 
