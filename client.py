@@ -2,174 +2,148 @@ import socket
 import json
 import os
 import threading
-import time  # Adicionado no início do arquivo
-import logging
+import time  # Para delay artificial
+import random  # Para delay artificial
+import uuid
 
-# Configuração do logger
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+# Gera um ID curto (8 caracteres em hexadecimal) para este cliente
+CLIENT_UUID = uuid.uuid4().hex[:8]
+SERVER_ADDR = ("127.0.0.1", 50007)  # Endereço do servidor
 
-# Configurações de multicast
-MULTICAST_GROUP = "224.1.1.1"
-PORT = 50007
-REPLICA_FILE = "replica.json"
-CHECKPOINT_FILE = "checkpoint.json"
+# Nomes dos arquivos de réplica e checkpoint deste cliente (incluindo o ID curto)
+REPLICA_FILE = f"replica_{CLIENT_UUID}.json"
+CHECKPOINT_FILE = f"checkpoint_{CLIENT_UUID}.json"
 
-# Configuração do socket para comunicação multicast
-sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 2)
-sock.setsockopt(socket.IPPROTO_IP, socket.IP_ADD_MEMBERSHIP,
-                socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton("0.0.0.0"))
-sock.settimeout(5)  # Timeout de 5 segundos para evitar bloqueios
-
-# Lock para sincronização de acesso ao arquivo de réplicas
-replica_lock = threading.Lock()
-
+# Socket para enviar (para o servidor)
+sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+sock_send.bind(("", 0))  # Usa porta dinâmica
 
 def inicializar_arquivos():
-    """Inicializa os arquivos necessários para o cliente."""
+    """Inicializa os arquivos de réplica e checkpoint do cliente."""
     if not os.path.exists(REPLICA_FILE):
         with open(REPLICA_FILE, "w") as f:
-            json.dump([], f)
-
+            json.dump([], f, indent=4)
     if not os.path.exists(CHECKPOINT_FILE):
+        estado_inicial = {"last_message": "", "token": False, "neighbors": []}
         with open(CHECKPOINT_FILE, "w") as f:
-            json.dump({"last_message": "", "token": True, "neighbors": []}, f)
-
-
-def gravar_mensagem(mensagem):
-    """Grava uma mensagem no arquivo de réplicas."""
-    try:
-        with replica_lock:
-            with open(REPLICA_FILE, "r") as f:
-                historico = json.load(f)
-            historico.append(mensagem)
-            with open(REPLICA_FILE, "w") as f:
-                json.dump(historico, f, indent=4)
-        logging.info(f"Mensagem gravada: {mensagem}")
-    except (FileNotFoundError, json.JSONDecodeError):
-        logging.error("Erro ao acessar o arquivo de réplicas. Criando um novo arquivo.")
-        with open(REPLICA_FILE, "w") as f:
-            json.dump([mensagem], f, indent=4)
-
+            json.dump(estado_inicial, f, indent=4)
 
 def salvar_checkpoint(last_msg, token, neighbors):
-    """Salva o estado atual no arquivo de checkpoint."""
-    checkpoint_data = {
-        "last_message": last_msg,
-        "token": token,
-        "neighbors": neighbors
-    }
+    """Salva o estado atual no arquivo de checkpoint do cliente."""
+    estado = {"last_message": last_msg, "token": token, "neighbors": neighbors}
     with open(CHECKPOINT_FILE, "w") as f:
-        json.dump(checkpoint_data, f)
-
+        json.dump(estado, f, indent=4)
 
 def carregar_checkpoint():
     """Carrega o estado salvo no arquivo de checkpoint."""
     try:
         with open(CHECKPOINT_FILE, "r") as f:
             return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        print("Erro ao carregar o checkpoint. Restaurando estado inicial.")
-        salvar_checkpoint(last_msg="", token=True, neighbors=[])
-        return {"last_message": "", "token": True, "neighbors": []}
+    except:
+        salvar_checkpoint("", False, [])
+        return {"last_message": "", "token": False, "neighbors": []}
 
+def gravar_mensagem(mensagem_obj):
+    """Grava uma mensagem (chat ou token) na réplica do cliente."""
+    with open(REPLICA_FILE, "r") as f:
+        historico = json.load(f)
+    historico.append(mensagem_obj)
+    with open(REPLICA_FILE, "w") as f:
+        json.dump(historico, f, indent=4)
 
-def sincronizar_replicas():
-    """Sincroniza as mensagens recebidas fora de ordem."""
-    with replica_lock:
-        with open(REPLICA_FILE, "r") as f:
-            historico = json.load(f)
-        historico = sorted(historico)
-        with open(REPLICA_FILE, "w") as f:
-            json.dump(historico, f)
+def enviar_join():
+    """Envia mensagem de join para o servidor."""
+    join_msg = {"type": "join", "sender": CLIENT_UUID}
+    sock_send.sendto(json.dumps(join_msg).encode(), SERVER_ADDR)
 
-
-def verificar_servidor():
-    """Verifica se o servidor está ativo."""
-    try:
-        sock.sendto(b"ping", (MULTICAST_GROUP, PORT))
-        data, addr = sock.recvfrom(1024)
-        if data.decode() == "pong":
-            print("Servidor ativo.")
-            return True
-    except socket.timeout:
-        print("Servidor não encontrado. Verifique se ele está ativo.")
-        return False
-
-
-def receber_mensagens():
-    """Recebe mensagens do grupo multicast."""
-    while True:
-        try:
-            data, addr = sock.recvfrom(1024)
-            msg = data.decode()
-            gravar_mensagem(msg)
-            sincronizar_replicas()
-            print(f"Mensagem recebida de {addr}: {msg}")
-
-            # Simula a liberação do token após receber uma mensagem
-            checkpoint = carregar_checkpoint()
-            if not checkpoint["token"]:
-                salvar_checkpoint(last_msg=checkpoint["last_message"], token=True, neighbors=checkpoint["neighbors"])
-                print("Token recebido após mensagem.")
-        except socket.timeout:
-            time.sleep(1)  # Aguarda 1 segundo antes de tentar novamente
-            continue
-
+def calcular_proximo(neighbors):
+    """Calcula o próximo nó no anel de token.
+       Se o CLIENT_UUID não estiver na lista, ele é adicionado.
+    """
+    if CLIENT_UUID not in neighbors:
+        neighbors.append(CLIENT_UUID)
+    neighbors_sorted = sorted(neighbors)
+    atual_index = neighbors_sorted.index(CLIENT_UUID)
+    return neighbors_sorted[(atual_index + 1) % len(neighbors_sorted)]
 
 def enviar_mensagens():
-    """Envia mensagens para o grupo multicast."""
+    """
+    Captura entrada do usuário e, se possuir o token, envia a mensagem de chat para o servidor.
+    Em seguida, envia o token para o próximo nó.
+    """
     while True:
         checkpoint = carregar_checkpoint()
         if not checkpoint["token"]:
-            logging.info("Aguardando o token para enviar mensagens...")
-            time.sleep(5)  # Aguarda 5 segundos antes de verificar novamente
+            time.sleep(1)
             continue
-
         try:
             msg = input("Digite sua mensagem (ou 'exit' para sair): ").strip()
             if not msg or len(msg) > 256:
-                logging.warning("Mensagem inválida. Tente novamente.")
                 continue
-
             if msg.lower() == "exit":
-                logging.info("Encerrando o cliente...")
-                salvar_checkpoint(last_msg="", token=False, neighbors=[])
                 exit()
-
-            # Envia a mensagem para o grupo multicast
-            sock.sendto(msg.encode(), (MULTICAST_GROUP, PORT))
-            gravar_mensagem(msg)
-
-            # Atualiza o checkpoint e libera o token
-            salvar_checkpoint(last_msg=msg, token=False, neighbors=[])
-            logging.info("Mensagem enviada. Token liberado.")
-
-            # Simula a passagem do token para outro cliente
-            logging.info("Passando o token para o próximo cliente...")
-            time.sleep(2)
-            salvar_checkpoint(last_msg=msg, token=True, neighbors=checkpoint["neighbors"])
+            mensagem_obj = {"type": "chat", "content": msg, "sender": CLIENT_UUID}
+            time.sleep(random.uniform(0.1, 1.0))
+            sock_send.sendto(json.dumps(mensagem_obj).encode(), SERVER_ADDR)
+            gravar_mensagem(mensagem_obj)
+            salvar_checkpoint(msg, False, checkpoint["neighbors"])
+            print("Mensagem enviada. Passando o token...")
+            proximo = calcular_proximo(checkpoint["neighbors"])
+            token_msg = {"type": "token", "next": proximo, "sender": CLIENT_UUID}
+            time.sleep(random.uniform(0.1, 1.0))
+            sock_send.sendto(json.dumps(token_msg).encode(), SERVER_ADDR)
+            gravar_mensagem(token_msg)
+            salvar_checkpoint(msg, False, checkpoint["neighbors"])
         except EOFError:
-            logging.info("Entrada finalizada. Encerrando o cliente...")
-            salvar_checkpoint(last_msg="", token=False, neighbors=[])
             exit()
 
+def receber_mensagens(msg_queue):
+    """
+    Processa mensagens recebidas a partir da fila compartilhada.
+    Trata:
+      - "neighbors": atualiza a lista de nós.
+      - "token": se direcionado a este cliente, adquire o token.
+      - "chat": exibe a mensagem e registra na réplica.
+    """
+    while True:
+        msg_text, addr = msg_queue.get()
+        try:
+            msg_obj = json.loads(msg_text)
+        except json.JSONDecodeError:
+            continue
+        msg_type = msg_obj.get("type", "chat")
+        if msg_type == "neighbors":
+            neighbors = msg_obj.get("neighbors", [])
+            checkpoint = carregar_checkpoint()
+            salvar_checkpoint(checkpoint["last_message"], checkpoint["token"], neighbors)
+            print(f"Neighbors atualizados: {neighbors}")
+        elif msg_type == "token":
+            if msg_obj.get("next") == CLIENT_UUID:
+                checkpoint = carregar_checkpoint()
+                salvar_checkpoint(checkpoint["last_message"], True, checkpoint["neighbors"])
+                print("Token recebido. Agora você pode enviar mensagens.")
+            gravar_mensagem(msg_obj)
+        elif msg_type == "chat":
+            content = msg_obj.get("content", "")
+            sender = msg_obj.get("sender", "unknown")
+            print(f"Mensagem recebida: {content} (from {sender})")
+            gravar_mensagem(msg_obj)
+        elif msg_type == "ping":
+            continue
 
 if __name__ == "__main__":
-    print("Tentando se conectar ao servidor...")
+    print(f"Cliente iniciado com ID: {CLIENT_UUID}")
     inicializar_arquivos()
-    if not verificar_servidor():
-        print("Servidor não está ativo. Por favor, inicie o servidor antes de executar o cliente.")
-        exit()
-
-    # Inicia threads para envio e recebimento de mensagens
-    thread_receber = threading.Thread(target=receber_mensagens, daemon=True)
+    enviar_join()
+    time.sleep(3)
+    checkpoint = carregar_checkpoint()
+    if not checkpoint["neighbors"] or (checkpoint["neighbors"] == [CLIENT_UUID]):
+        salvar_checkpoint("", True, [CLIENT_UUID])
+        print("Nenhum neighbor definido ou sou o único. Token concedido a mim.")
+    msg_queue = queue.Queue()
+    thread_receber = threading.Thread(target=receber_mensagens, args=(msg_queue,), daemon=True)
     thread_receber.start()
-
     thread_enviar = threading.Thread(target=enviar_mensagens, daemon=True)
     thread_enviar.start()
-
-    # Mantém o cliente ativo
     thread_receber.join()
     thread_enviar.join()

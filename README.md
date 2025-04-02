@@ -1,82 +1,68 @@
 # Sistema de Chat Distribuído com Multicast
 
 ## Descrição
-Este projeto tem como objetivo desenvolver um sistema de chat em grupo distribuído, utilizando comunicação via multicast, replicação de mensagens, controle de concorrência e tolerância a falhas. O projeto faz parte da disciplina de Sistemas Distribuídos do Instituto Federal de Educação, Ciência e Tecnologia da Bahia.
+Este projeto implementa um sistema de chat distribuído utilizando comunicação via UDP multicast. Cada nó (cliente ou servidor) mantém uma réplica local das mensagens em arquivos JSON e adota técnicas de controle de concorrência e tolerância a falhas. As principais funcionalidades são:
 
-## Objetivos
-1. **Comunicação em Grupo com Multicast**
-   - Implementar comunicação utilizando sockets com protocolo UDP multicast.
-   - Criar um servidor e clientes que se comuniquem via multicast IP (exemplo: 224.1.1.1:5007).
-   - Garantir que os clientes possam enviar e receber mensagens de todos os participantes.
+- **Comunicação com Multicast:**  
+  O servidor e os clientes se comunicam via UDP multicast (ex.: 224.1.1.1:5007).
 
-2. **Replicação de Dados e Consistência Eventual**
-   - Gravar cada mensagem recebida em arquivos locais (réplicas) no formato JSON.
-   - Incluir um delay artificial para simular entrega fora de ordem.
-   - Criar um processo reconciliador para sincronizar os dados entre as réplicas.
+- **Replicação e Consistência Eventual:**  
+  Cada mensagem é gravada na réplica local (por exemplo, `replica_server.json` ou `replica_<UUID>.json`). Um reconciliador no servidor sincroniza periodicamente o histórico com os clientes, garantindo consistência eventual.
 
-3. **Controle de Concorrência com Exclusão Mútua Distribuída**
-   - Implementar um algoritmo de exclusão mútua (Token Ring).
-   - Garantir que apenas um nó por vez envie mensagens ao grupo.
-   - Exibir mensagens de requisição e concessão de acesso ao recurso via token.
+- **Exclusão Mútua (Token Ring):**  
+  Implementação do algoritmo Token Ring para garantir que apenas um cliente envie mensagens por vez. Após enviar sua mensagem, o cliente libera o token, que é passado para o próximo cliente no anel lógico.
 
-4. **Tolerância a Falhas com Checkpoints e Rollback**
-   - Criar snapshots do estado do cliente periodicamente em arquivos JSON.
-   - Restaurar o estado salvo no último checkpoint após uma falha.
-   - Utilizar arquivos simples ou SQLite para armazenar checkpoints (neste exemplo, JSON).
+- **Tolerância a Falhas com Checkpoints:**  
+  São criados checkpoints periódicos do estado da réplica (tanto no servidor quanto no cliente) para permitir a recuperação em caso de falhas.
 
-5. **Controle Concorrente com `threading`**
-   - Implementar threads para envio e recebimento de mensagens simultaneamente.
-   - Garantir sincronização de acesso aos arquivos JSON usando `threading.Lock`.
+- **Execução Concorrente com Threads:**  
+  Threads são utilizadas para o envio, recebimento de mensagens e criação de checkpoints, com sincronização via `threading.Lock`.
+
+- **Simulação de Delays Artificiais:**  
+  Foram inseridos delays artificiais (entre 100ms e 1 segundo) para simular variações de latência e entregas fora de ordem, permitindo testar a robustez do sistema.
 
 ## Tecnologias Utilizadas
-- **Linguagem**: Python 3
-- **Bibliotecas**:
-  - `socket` (para comunicação via UDP multicast)
-  - `time` e `random` (para simular delays na entrega de mensagens)
-  - `json` (para armazenamento de mensagens e checkpoints)
-  - `threading` (para controle concorrente)
-  - `unittest` e `mock` (para testes unitários)
-  - `flask`, `requests`, `gunicorn` (opcional, para extensões futuras)
+- **Linguagem:** Python 3  
+- **Bibliotecas:** `socket`, `json`, `os`, `time`, `random`, `threading`, `uuid`, `unittest`, `mock`
+
+## Pré-requisitos
+1. Ter o Python 3 instalado.
+2. Instalar as dependências listadas em `requirement.txt`:
+   ```sh
+   pip install -r requirement.txt
+   ```
 
 ## Como Executar
-1. **Instalar Dependências**
-   - Certifique-se de que o Python 3 está instalado.
-   - Instale as dependências listadas no arquivo `requirement.txt`:
-     ```sh
-     pip install -r requirement.txt
-     ```
-
-2. **Executar o Servidor**
-   - Rode o seguinte comando na pasta raiz:
+1. **Servidor:**
+   - Inicie o servidor executando:
      ```sh
      python server.py
      ```
-   - O servidor ficará escutando mensagens no endereço multicast (224.1.1.1:5007).
+   - O servidor ficará escutando no endereço multicast, gravará as mensagens em `replica_server.json`, criará checkpoints e, a cada 10 segundos, sincronizará as réplicas com os clientes.
 
-3. **Executar os Clientes**
-   - Rode o seguinte comando para cada cliente em terminais diferentes:
+2. **Clientes:**
+   - Em terminais diferentes, execute cada cliente:
      ```sh
      python client.py
      ```
-   - Cada cliente criará ou usará réplicas (`replica.json`) e checkpoints (`checkpoint.json`).
+   - Cada cliente gera um UUID único, grava suas mensagens em `replica_<UUID>.json` e cria checkpoints em `checkpoint_<UUID>.json`. Antes de iniciar, os clientes verificam o servidor (através de um "ping") e só enviam mensagens se possuírem o token, que é passado via o algoritmo Token Ring.
 
-4. **Executar os Testes**
-   - Para garantir que todas as funções estão funcionando corretamente, execute os testes unitários:
+3. **Testes Unitários:**
+   - Para executar os testes:
      ```sh
      python -m unittest test_client.py
      ```
 
-5. **Testes e Demonstração**
-   - O sistema deve ser testado com pelo menos 3 clientes conectados simultaneamente.
-   - Registre prints ou vídeos da execução para documentação.
+## Observações
+- Toda a documentação deste projeto segue as melhores práticas, enquanto as implementações foram ajustadas para aderir ao PEP‑8 e padrões de qualidade.
 
 ## Critérios de Avaliação
-| Critério | Peso |
-|-----------|------|
-| Funcionamento correto dos módulos e integração entre eles | 1.5 |
-| Clareza, organização e comentários no código | 0.5 |
-| Demonstração prática (prints, vídeos ou evidência funcional) | 0.5 |
-| Qualidade da implementação dos conceitos de replicação e recuperação | 0.5 |
+| Critério                                                            | Peso |
+| ------------------------------------------------------------------- | ---- |
+| Funcionamento correto dos módulos e integração entre eles           | 1.5  |
+| Clareza, organização e comentários no código                        | 0.5  |
+| Demonstração prática (prints, vídeos ou evidências funcionais)        | 0.5  |
+| Qualidade da implementação dos conceitos de replicação e recuperação  | 0.5  |
 
 ## Entrega
 - **Data limite:** 02/04/2025  
