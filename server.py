@@ -1,97 +1,138 @@
-# Importa as bibliotecas necessárias
-import socket
-import json
 import os
+import json
 import threading
-import time  # Para delay artificial
-import random  # Para delay artificial
+import socket
+import time
+import random
 
-# Configurações de multicast e porta
-MULTICAST_GROUP = "224.1.1.1"
 PORT = 50007
-REPLICA_SERVER_FILE = "replica_server.json"
-CHECKPOINT_SERVER_FILE = "checkpoint_server.json"
+MULTICAST_GROUP = "224.1.1.1"
+SERVER_ID = "server"
 
-NEIGHBORS = set()
+REPLICA_SERVER_FILE = os.path.join(os.getcwd(), "replica_server.json")
+CHECKPOINT_SERVER_FILE = os.path.join(os.getcwd(), "checkpoint_server.json")
 
-# Locks para sincronização dos arquivos
-replica_lock = threading.Lock()
-checkpoint_lock = threading.Lock()
+NEIGHBORS = set()  # Set of client UUIDs
+LOCK = threading.Lock()
+token_holder = SERVER_ID  # Initially, server holds the token
 
-def inicializar_arquivo_servidor():
-    """Inicializa os arquivos de réplica e checkpoint do servidor."""
+def inicializar_arquivos():
+    """Cria os arquivos de réplica e checkpoint do servidor na raíz, se não existirem."""
     if not os.path.exists(REPLICA_SERVER_FILE):
         with open(REPLICA_SERVER_FILE, "w") as f:
             json.dump([], f, indent=4)
+        print("[LOG] Arquivo de réplica do servidor criado em:", REPLICA_SERVER_FILE)
     if not os.path.exists(CHECKPOINT_SERVER_FILE):
-        estado_inicial = {"last_message": "", "neighbors": []}
         with open(CHECKPOINT_SERVER_FILE, "w") as f:
-            json.dump(estado_inicial, f, indent=4)
+            # Server checkpoint: token=True means server holds token
+            json.dump({"last_message": "", "token": True, "neighbors": []}, f, indent=4)
+        print("[LOG] Arquivo de checkpoint do servidor criado em:", CHECKPOINT_SERVER_FILE)
 
-def salvar_checkpoint_servidor(last_message, neighbors):
+def salvar_checkpoint(last_msg, token, neighbors):
     """Salva o estado atual no checkpoint do servidor."""
-    with checkpoint_lock:
-        estado = {"last_message": last_message, "neighbors": sorted(list(neighbors))}
+    with LOCK:
+        estado = {"last_message": last_msg, "token": token, "neighbors": sorted(list(neighbors))}
         with open(CHECKPOINT_SERVER_FILE, "w") as f:
             json.dump(estado, f, indent=4)
+        print("[LOG] Checkpoint do servidor salvo:", estado)
 
-def gravar_mensagem_servidor(mensagem_obj):
-    """Grava uma mensagem (incluindo 'content' e 'sender') no arquivo do servidor."""
-    with replica_lock:
-        with open(REPLICA_SERVER_FILE, "r") as f:
-            historico = json.load(f)
-        historico.append(mensagem_obj)
+def gravar_mensagem(msg_obj):
+    """Grava uma mensagem no arquivo de réplica do servidor."""
+    with LOCK:
+        try:
+            with open(REPLICA_SERVER_FILE, "r") as f:
+                historico = json.load(f)
+        except Exception:
+            historico = []
+        historico.append(msg_obj)
         with open(REPLICA_SERVER_FILE, "w") as f:
             json.dump(historico, f, indent=4)
+        print("[LOG] Mensagem gravada na réplica do servidor:", msg_obj)
 
-def processar_mensagens(msg_queue):
-    """
-    Processa mensagens recebidas (obtidas da fila compartilhada).
-    Opera os seguintes tipos:
-      - "join": adiciona novo nó e envia lista de neighbors via um socket de envio.
-      - "token": repassa o token (evita reenvio se já encaminhado).
-      - "chat": grava a mensagem, atualiza checkpoint e reenvia.
-    """
-    send_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    print("Servidor esperando mensagens (filtradas pela fila)...")
+def enviar_token(sock):
+    """Se houver clientes, passa o token para o primeiro deles; caso contrário, mantém-o no servidor."""
+    global token_holder
+    with LOCK:
+        if NEIGHBORS:
+            next_node = sorted(list(NEIGHBORS))[0]
+            token_holder = next_node
+            token_msg = {"type": "token", "next": next_node, "sender": SERVER_ID}
+            sock.sendto(json.dumps(token_msg).encode(), (MULTICAST_GROUP, PORT))
+            salvar_checkpoint("Token passado for " + next_node, False, NEIGHBORS)
+            print(f"[LOG] {SERVER_ID}: Token enviado para {next_node}.")
+        else:
+            token_holder = SERVER_ID
+            salvar_checkpoint("Sem cliente", True, NEIGHBORS)
+            print(f"[LOG] {SERVER_ID}: Sem cliente conectado. Token permanece.")
+
+def processar_mensagens():
+    """Processa mensagens recebidas: join, chat and token."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.bind(("", PORT))
+    sock.setsockopt(socket.IPPROTO_IP,
+                    socket.IP_MULTICAST_TTL, 2)
+    sock.setsockopt(socket.IPPROTO_IP,
+                    socket.IP_ADD_MEMBERSHIP,
+                    socket.inet_aton(MULTICAST_GROUP) + socket.inet_aton("0.0.0.0"))
     while True:
-        msg_text, addr = msg_queue.get()  # bloqueia até ter mensagem
+        data, addr = sock.recvfrom(4096)
         try:
-            msg_obj = json.loads(msg_text)
+            msg = json.loads(data.decode())
+            print(f"[LOG] Servidor recebeu de {addr}: {msg}")
         except json.JSONDecodeError:
+            print("[ERRO] Falha ao decodificar mensagem.")
             continue
-        msg_type = msg_obj.get("type", "chat")
-        sender = msg_obj.get("sender", "unknown")
-        if msg_type == "ping":
-            # Responder com pong se desejar (não utilizado neste exemplo)
-            continue
+
+        msg_type = msg.get("type")
+        sender = msg.get("sender")
+
         if msg_type == "join":
-            NEIGHBORS.add(sender)
-            salvar_checkpoint_servidor(f"Join de {sender}", NEIGHBORS)
-            # Envia a lista completa de neighbors para todos
+            with LOCK:
+                NEIGHBORS.add(sender)
+            salvar_checkpoint("Join de " + sender, token_holder == SERVER_ID, NEIGHBORS)
+            # Enviar lista atualizada de vizinhos para todos.
             neighbors_msg = {"type": "neighbors", "neighbors": sorted(list(NEIGHBORS))}
-            send_sock.sendto(json.dumps(neighbors_msg).encode(), (MULTICAST_GROUP, PORT))
-            print(f"Novo nó {sender} entrou. Neighbors: {sorted(list(NEIGHBORS))}")
-            continue
-        if msg_type == "token":
-            if msg_obj.get("forwarded", False):
-                continue
-            msg_obj["forwarded"] = True
-            gravar_mensagem_servidor(msg_obj)
-            salvar_checkpoint_servidor(f"Token enviado para {msg_obj.get('next')}", NEIGHBORS)
-            print(f"Token recebido de {addr} - repassado: {json.dumps(msg_obj)}")
-            send_sock.sendto(json.dumps(msg_obj).encode(), (MULTICAST_GROUP, PORT))
-            continue
-        if msg_type == "chat":
-            content = msg_obj.get("content", "")
+            sock.sendto(json.dumps(neighbors_msg).encode(), (MULTICAST_GROUP, PORT))
+            print(f"[LOG] Novo nó {sender} entrou. Neighbors: {sorted(list(NEIGHBORS))}")
+            if token_holder == SERVER_ID:
+                enviar_token(sock)
+
+        elif msg_type == "chat":
+            content = msg.get("content", "")
+            gravar_mensagem({"type": "chat", "content": content, "sender": sender})
+            salvar_checkpoint("Chat: " + content, token_holder == SERVER_ID, NEIGHBORS)
+            print(f"[LOG] Mensagem de {sender}: {content}")
+            # Retransmite a mensagem para todos (multicast)
             time.sleep(random.uniform(0.1, 1.0))
-            log_entry = {"type": "chat", "content": content, "sender": sender}
-            gravar_mensagem_servidor(log_entry)
-            salvar_checkpoint_servidor(content, NEIGHBORS)
-            print(f"Mensagem recebida de {addr} - Sender: {sender} - Content: {content}")
-            send_sock.sendto(msg_text.encode(), (MULTICAST_GROUP, PORT))
+            sock.sendto(data, (MULTICAST_GROUP, PORT))
+
+        elif msg_type == "token":
+            # Se o token retorna ao servidor (next==server), passa para o próximo cliente
+            if msg.get("next") == SERVER_ID:
+                print(f"[LOG] {SERVER_ID}: Token retornou.")
+                enviar_token(sock)
+            # Otherwise, assume the token is handled by the client.
+        # Additional types (ex. sync) can be handled here.
+
+def reconciliar_replicas():
+    """Periodicamente sincroniza a réplica do servidor (aqui envia uma mensagem de sync)."""
+    while True:
+        time.sleep(10)
+        with LOCK:
+            try:
+                with open(REPLICA_SERVER_FILE, "r") as f:
+                    historico = json.load(f)
+            except Exception:
+                historico = []
+        sync_msg = {"type": "sync", "history": historico}
+        temp_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        temp_sock.sendto(json.dumps(sync_msg).encode(), (MULTICAST_GROUP, PORT))
+        print("[LOG] Réplicas sincronizadas.")
 
 if __name__ == "__main__":
-    inicializar_arquivo_servidor()
-    # A função processar_mensagens agora espera uma fila de mensagens como parâmetro.
-    # A inicialização da fila e o fornecimento de mensagens devem ser feitos externamente.
+    inicializar_arquivos()
+    threading.Thread(target=processar_mensagens, daemon=True).start()
+    threading.Thread(target=reconciliar_replicas, daemon=True).start()
+    print("[LOG] Servidor iniciado. Aguardando mensagens...")
+    while True:
+        time.sleep(1)

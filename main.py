@@ -6,10 +6,11 @@ import json
 import random
 from queue import Queue
 
-# Cria o socket de recepção multicast compartilhado (único bind na porta 50007)
+# Configurações de multicast
 MULTICAST_GROUP = "224.1.1.1"
 PORT = 50007
 
+# Configuração do socket multicast
 shared_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
 shared_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 shared_sock.bind(("0.0.0.0", PORT))
@@ -25,6 +26,15 @@ shared_sock.settimeout(5)
 queue_server = Queue()
 queue_client = Queue()
 
+def derrubar_servicos():
+    """Derruba os serviços do Docker Compose, se estiverem rodando."""
+    print("[LOG] Derrubando serviços...")
+    try:
+        subprocess.run(["docker-compose", "down"], check=True)
+        print("[LOG] Serviços derrubados.")
+    except subprocess.CalledProcessError as e:
+        print(f"[ERRO] Falha ao derrubar os serviços: {e}")
+
 def receiver():
     """Thread que recebe dados do socket compartilhado e coloca em ambas as filas."""
     while True:
@@ -37,43 +47,73 @@ def receiver():
         except socket.timeout:
             continue
 
-# Funções para iniciar a lógica do servidor e do cliente
-def iniciar_servidor():
-    # Importa a função modificada do servidor (que usa a fila)
-    from server import inicializar_arquivo_servidor, processar_mensagens
-    inicializar_arquivo_servidor()
-    processar_mensagens(queue_server)
+def iniciar_docker_compose():
+    """Inicia os serviços do Docker Compose no modo desanexado."""
+    print("[LOG] Iniciando Docker Compose...")
+    try:
+        subprocess.run(["docker-compose", "up", "--build", "-d"], check=True)
+        print("[LOG] Serviços iniciados.")
+    except subprocess.CalledProcessError as e:
+        print(f"[ERRO] Falha ao iniciar os serviços: {e}")
 
-def iniciar_cliente():
-    # Importa a função modificada do cliente (que usa a fila)
-    from client import inicializar_arquivos, enviar_join, receber_mensagens, enviar_mensagens, carregar_checkpoint, salvar_checkpoint
-    inicializar_arquivos()
-    enviar_join()
-    time.sleep(3)
-    checkpoint = carregar_checkpoint()
-    if not checkpoint["neighbors"] or (checkpoint["neighbors"] == [] or checkpoint["neighbors"] == [checkpoint.get("CLIENT_UUID", "")]):
-        salvar_checkpoint("", True, [checkpoint.get("CLIENT_UUID", "")])
-        print("Nenhum neighbor definido ou sou o único. Token concedido a mim.")
-    # Inicia as threads de recebimento e envio do cliente
-    thread_receber = threading.Thread(target=receber_mensagens, args=(queue_client,), daemon=True)
-    thread_receber.start()
-    thread_enviar = threading.Thread(target=enviar_mensagens, daemon=True)
-    thread_enviar.start()
-    thread_receber.join()
-    thread_enviar.join()
+def acompanhar_logs(servico):
+    """Acompanha os logs de um serviço Docker e os imprime em tempo real."""
+    print(f"[LOG] Acompanhando logs: {servico}")
+    try:
+        proc = subprocess.Popen(
+            ["docker", "logs", "-f", servico],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        # Capture output line by line and print it.
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                break
+            print(f"[{servico}] {line.strip()}")
+        proc.wait()
+    except KeyboardInterrupt:
+        print(f"[LOG] Interrompido o acompanhamento de logs do serviço: {servico}")
+    except Exception as e:
+        print(f"[ERRO] Falha ao acompanhar os logs do serviço {servico}: {e}")
+
+def acompanhar_todos_logs():
+    """Cria threads para acompanhar os logs do servidor e de todos os clientes."""
+    print("[LOG] Acompanhando logs do servidor e dos clientes...")
+    threads = []
+
+    # Adiciona o acompanhamento do servidor
+    threads.append(threading.Thread(target=acompanhar_logs, args=("chat_server",)))
+
+    # Adiciona o acompanhamento dos clientes
+    for i in range(1, 6):  # Ajuste o número de clientes conforme necessário
+        threads.append(threading.Thread(target=acompanhar_logs, args=(f"chatmulticast-client-{i}",)))
+
+    for thread in threads:
+        thread.daemon = True  # Permite que o programa encerre se o main thread for interrompido.
+        thread.start()
+
+    # Mantenha o main thread ativo para que os logs continuem sendo exibidos
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("[LOG] Interrupção pelo usuário.")
 
 if __name__ == "__main__":
-    # Inicia a thread que recebe do socket multicast compartilhado
-    thread_receiver = threading.Thread(target=receiver, daemon=True)
-    thread_receiver.start()
-    
-    # Inicia as threads do servidor e do cliente
-    thread_server = threading.Thread(target=iniciar_servidor, daemon=True)
-    thread_client = threading.Thread(target=iniciar_cliente, daemon=True)
-    thread_server.start()
-    # Pequeno atraso para permitir que o servidor inicie
-    time.sleep(1)
-    thread_client.start()
-    
-    thread_server.join()
-    thread_client.join()
+    try:
+        # Passo 1: Derrubar serviços existentes
+        derrubar_servicos()
+
+        # Passo 2: Iniciar os serviços do Docker Compose
+        iniciar_docker_compose()
+
+        # Pequeno atraso para garantir que os contêineres estejam prontos
+        time.sleep(5)
+
+        # Passo 3: Acompanhar logs do servidor e dos clientes
+        acompanhar_todos_logs()
+
+    except Exception as e:
+        print(f"[ERRO] Ocorreu um erro inesperado: {e}")

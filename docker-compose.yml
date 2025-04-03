@@ -1,0 +1,27 @@
+version: "3.8"
+
+services:
+  server:
+    build: .
+    container_name: chat_server
+    environment:
+      - NODE_TYPE=server
+      - PORT=50007
+    ports:
+      - "50007:50007/udp"
+    networks:
+      - chatnet
+
+  client:
+    build: .
+    environment:
+      - NODE_TYPE=client
+      - PORT=50007
+    networks:
+      - chatnet
+    deploy:
+      replicas: 5
+
+networks:
+  chatnet:
+    driver: bridge
