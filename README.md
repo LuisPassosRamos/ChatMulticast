@@ -19,7 +19,7 @@ Este projeto implementa um sistema de chat distribuído utilizando comunicação
   Threads são utilizadas para o envio, recebimento de mensagens e criação de checkpoints, com sincronização via `threading.Lock`.
 
 - **Simulação de Delays Artificiais:**  
-  Foram inseridos delays artificiais (entre 100ms e 1 segundo) para simular variações de latência e entregas fora de ordem, permitindo testar a robustez do sistema.
+  Foram inseridos delays artificiais para simular variações de latência e entregas fora de ordem, permitindo testar a robustez do sistema.
 
 ## Tecnologias Utilizadas
 - **Linguagem:** Python 3  
