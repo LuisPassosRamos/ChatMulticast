@@ -1,4 +1,4 @@
-FROM python:3.9-slim
+FROM python:3.12-slim
 
 # Defina a saída não-bufferizada do Python
 ENV PYTHONUNBUFFERED=1
@@ -7,10 +7,7 @@ ENV PYTHONUNBUFFERED=1
 WORKDIR /app
 
 # Copia os arquivos do projeto para o contêiner
-COPY . .
-
-# Instala as dependências
-RUN pip install -r requirement.txt
+COPY client.py server.py ./
 
 # Usa a variável NODE_TYPE para decidir qual script executar
 CMD ["sh", "-c", "python -u ${NODE_TYPE}.py"]
