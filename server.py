@@ -16,7 +16,8 @@ CHECKPOINT_SERVER_FILE = os.path.join(os.getcwd(), "checkpoint_server.json")
 
 # Controle de estado e concorrência
 NEIGHBORS = set()  # Conjunto de UUIDs dos clientes conectados
-LOCK = threading.Lock()
+# The token update and its checkpoint use the same lock.
+LOCK = threading.RLock()
 token_holder = SERVER_ID  # Inicialmente, o servidor detém o token
 
 
@@ -99,6 +100,8 @@ def gravar_mensagem(msg_obj):
             print(f"[LOG] Erro ao ler histórico de mensagens: {e}")
             historico = []
         
+        if msg_obj in historico:
+            return
         historico.append(msg_obj)
         with open(REPLICA_SERVER_FILE, "w") as f:
             json.dump(historico, f, indent=4)
@@ -152,6 +155,7 @@ def processar_mensagens():
     """
     # Configuração do socket para comunicação multicast
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("", PORT))
     sock.setsockopt(socket.IPPROTO_IP,
                     socket.IP_MULTICAST_TTL, 2)
@@ -208,11 +212,6 @@ def processar_mensagens():
                 salvar_checkpoint(f"Chat: {content}", token_holder == SERVER_ID, NEIGHBORS)
                 print(f"[LOG] Mensagem de {sender}: {content}")
                 
-                # Retransmite para todos (implementação do multicast)
-                # Delay para simular latência variável
-                time.sleep(random.uniform(0.1, 1.0))  
-                sock.sendto(json.dumps(msg).encode(), (MULTICAST_GROUP, PORT))
-
             elif msg_type == "token":
                 # Processamento do token (algoritmo Token Ring)
                 if msg.get("next") in [SERVER_ID, "server"]:

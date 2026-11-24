@@ -1,69 +1,27 @@
-# Sistema de Chat Distribuído com Multicast
+# Chat distribuído com UDP multicast
 
-## Descrição
-Este projeto implementa um sistema de chat distribuído utilizando comunicação via UDP multicast. Cada nó (cliente ou servidor) mantém uma réplica local das mensagens em arquivos JSON e adota técnicas de controle de concorrência e tolerância a falhas. As principais funcionalidades são:
+Exercício de Sistemas Distribuídos em Python. Um servidor coordena clientes automatizados que trocam mensagens num grupo multicast. O objetivo é observar como um token dá a vez de enviar, como cada nó guarda uma réplica e como um checkpoint local registra o último estado conhecido.
 
-- **Comunicação com Multicast:**  
-  O servidor e os clientes se comunicam via UDP multicast (ex.: 224.1.1.1:5007).
+## Executar
 
-- **Replicação e Consistência Eventual:**  
-  Cada mensagem é gravada na réplica local (por exemplo, `replica_server.json` ou `replica_<UUID>.json`). Um reconciliador no servidor sincroniza periodicamente o histórico com os clientes, garantindo consistência eventual.
+Com Docker e o plugin Docker Compose instalados, abra um terminal na raiz do projeto.
 
-- **Exclusão Mútua (Token Ring):**  
-  Implementação do algoritmo Token Ring para garantir que apenas um cliente envie mensagens por vez. Após enviar sua mensagem, o cliente libera o token, que é passado para o próximo cliente no anel lógico.
+```bash
+docker compose up --build --scale client=3
+```
 
-- **Tolerância a Falhas com Checkpoints:**  
-  São criados checkpoints periódicos do estado da réplica (tanto no servidor quanto no cliente) para permitir a recuperação em caso de falhas.
+Nos logs, procure a entrada de cada cliente, a circulação do token e a gravação das mensagens. A execução padrão usa cinco clientes. Com `python main.py`, os contêineres iniciam em segundo plano e o terminal acompanha os logs. Encerre a demonstração com `docker compose down`.
 
-- **Execução Concorrente com Threads:**  
-  Threads são utilizadas para o envio, recebimento de mensagens e criação de checkpoints, com sincronização via `threading.Lock`.
+Para executar sem Docker, use `python server.py` e abra terminais adicionais com `python client.py` em uma rede que suporte multicast UDP. A aplicação usa apenas a biblioteca padrão.
 
-- **Simulação de Delays Artificiais:**  
-  Foram inseridos delays artificiais para simular variações de latência e entregas fora de ordem, permitindo testar a robustez do sistema.
+## O que observar no código
 
-## Tecnologias Utilizadas
-- **Linguagem:** Python 3  
-- **Bibliotecas:** `socket`, `json`, `os`, `time`, `random`, `threading`, `uuid`, `unittest`, `mock`
+| Conceito | Onde aparece |
+| --- | --- |
+| Multicast UDP | [Servidor](server.py) e [clientes](client.py) usam o grupo `224.1.1.1:50007`. |
+| Exclusão mútua | O servidor distribui o token e cada cliente usa a lista de vizinhos para passar a vez. |
+| Réplica e recuperação | Cada nó armazena mensagens e checkpoints em JSON. O servidor envia seu histórico periodicamente para reconciliar as cópias. |
 
-## Pré-requisitos
-1. Ter o Python 3 instalado.
-2. Instalar as dependências listadas em `requirement.txt`:
-   ```sh
-   pip install -r requirement.txt
-   ```
+A demonstração usa atrasos artificiais. UDP admite perdas, duplicatas e entregas fora de ordem. A coordenação depende do servidor e os arquivos dentro dos contêineres permanecem disponíveis enquanto esses contêineres existirem. O exercício é reproduzível em uma rede local com multicast habilitado.
 
-## Como Executar
-1. **Servidor:**
-   - Inicie o servidor executando:
-     ```sh
-     python server.py
-     ```
-   - O servidor ficará escutando no endereço multicast, gravará as mensagens em `replica_server.json`, criará checkpoints e, a cada 10 segundos, sincronizará as réplicas com os clientes.
-
-2. **Clientes:**
-   - Em terminais diferentes, execute cada cliente:
-     ```sh
-     python client.py
-     ```
-   - Cada cliente gera um UUID único, grava suas mensagens em `replica_<UUID>.json` e cria checkpoints em `checkpoint_<UUID>.json`. Antes de iniciar, os clientes verificam o servidor (através de um "ping") e só enviam mensagens se possuírem o token, que é passado via o algoritmo Token Ring.
-
-3. **Testes Unitários:**
-   - Para executar os testes:
-     ```sh
-     python -m unittest test_client.py
-     ```
-
-## Observações
-- Toda a documentação deste projeto segue as melhores práticas, enquanto as implementações foram ajustadas para aderir ao PEP‑8 e padrões de qualidade.
-
-## Critérios de Avaliação
-| Critério                                                            | Peso |
-| ------------------------------------------------------------------- | ---- |
-| Funcionamento correto dos módulos e integração entre eles           | 1.5  |
-| Clareza, organização e comentários no código                        | 0.5  |
-| Demonstração prática (prints, vídeos ou evidências funcionais)        | 0.5  |
-| Qualidade da implementação dos conceitos de replicação e recuperação  | 0.5  |
-
-## Entrega
-- **Data limite:** 02/04/2025  
-- **Forma de envio:** Email para felipe_silva@ifba.edu.br com identificação do aluno, disciplina e turma.
+Os [testes do servidor](tests/test_server.py) verificam a passagem do token com gravação do checkpoint e o descarte de uma mensagem repetida. Execute com `python -m unittest discover -s tests`.

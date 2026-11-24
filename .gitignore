@@ -1,0 +1,3 @@
+__pycache__/
+/replica_*.json
+/checkpoint_*.json

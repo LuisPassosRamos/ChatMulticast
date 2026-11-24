@@ -136,6 +136,8 @@ def gravar_mensagem(msg_obj):
         if isinstance(msg_obj, dict) and "timestamp" not in msg_obj:
             msg_obj["timestamp"] = time.time()
             
+        if msg_obj in historico:
+            return
         historico.append(msg_obj)
         with open(REPLICA_FILE, "w") as f:
             json.dump(historico, f, indent=4)
